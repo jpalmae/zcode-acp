@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# cargo cache
+/.cargo

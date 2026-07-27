@@ -1,0 +1,8 @@
+{
+  "name": "zcode",
+  "version": "0.1.0",
+  "description": "ZCode agent persona pack for Buzz, bridged via zcode-acp.",
+  "personas": [
+    "zcode.persona.md"
+  ]
+}

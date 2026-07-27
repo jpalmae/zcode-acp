@@ -1,0 +1,48 @@
+[package]
+name = "zcode-acp"
+version = "0.1.0"
+edition = "2024"
+description = "ACP adapter that bridges Buzz relay events to the ZCode CLI via its stdio app-server"
+license = "Apache-2.0"
+
+[lib]
+doctest = false
+
+[dependencies]
+# ACP SDK — pinned exactly as codex-acp does, to avoid silent API drift.
+agent-client-protocol = { version = "=0.14.0", features = ["unstable"] }
+# Async runtime + stdio bridging into the SDK's futures-based transport.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "process", "signal", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+# CLI parsing.
+clap = { version = "4", features = ["derive", "env"] }
+# Logging (to stderr only — stdout is the ACP channel).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Serialization.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+# IDs.
+uuid = { version = "1", features = ["v4"] }
+# HTTP client for the Z.AI OAuth init/poll flow + token exchange.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Crypto for ~/.zcode/v2/credentials.json (AES-256-GCM, SHA-256 key).
+aes-gcm = "0.10"
+sha2 = "0.10"
+# Base64url encoding for the credentials ciphertext + OAuth tokens.
+base64 = "0.22"
+# Error handling.
+anyhow = "1"
+thiserror = "2"
+# Async utilities.
+futures-util = "0.3"
+# URL parsing for OAuth endpoints.
+url = "2"
+
+[lints.clippy]
+print_stdout = "deny"
+print_stderr = "deny"
+
+[profile.release]
+strip = true
+lto = "thin"

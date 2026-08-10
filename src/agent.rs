@@ -9,27 +9,27 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_client_protocol as acp;
 use acp::schema::{
     AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodAgent, CancelNotification,
-    CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk, InitializeRequest,
-    InitializeResponse, Implementation, ListSessionsResponse, LoadSessionRequest,
+    CloseSessionRequest, CloseSessionResponse, ContentBlock, ContentChunk, Implementation,
+    InitializeRequest, InitializeResponse, ListSessionsResponse, LoadSessionRequest,
     LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionId, PermissionOptionKind, PromptCapabilities,
-    PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionRequest,
+    NewSessionResponse, PermissionOption, PermissionOptionId, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, ProtocolVersion, RequestPermissionRequest,
     RequestPermissionResponse, SessionCloseCapabilities, SessionId, SessionListCapabilities,
-    SessionMode, SessionModeId, SessionModeState, SessionResumeCapabilities,
-    SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    SessionMode, SessionModeId, SessionModeState, SessionResumeCapabilities, SessionUpdate,
+    SetSessionModeRequest, SetSessionModeResponse, StopReason, ToolCallId, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use acp::{Client, ConnectionTo, Error, Result};
+use agent_client_protocol as acp;
 use tokio::sync::Mutex;
 
+use crate::RunConfig;
 use crate::acp_translator;
 use crate::zcode::{
-    auth, protocol as zp, SessionCommand, SessionConfig, SessionMessage, TurnError, ZcodeSession,
+    SessionCommand, SessionConfig, SessionMessage, TurnError, ZcodeSession, auth, protocol as zp,
 };
-use crate::RunConfig;
 
 /// Auth-method identifiers we advertise (mirrors codex-acp's multi-method set,
 /// adapted to ZCode's Z.AI OAuth + API-key options).
@@ -153,12 +153,13 @@ impl ZcodeAgent {
             .on_receive_request(
                 {
                     let agent = agent.clone();
-                    async move |request: SetSessionModeRequest, responder, cx: ConnectionTo<Client>| {
+                    async move |request: SetSessionModeRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
                         let agent = agent.clone();
                         let inner_cx = cx.clone();
                         cx.spawn(async move {
-                            responder
-                                .respond_with_result(agent.set_mode(request, inner_cx).await)
+                            responder.respond_with_result(agent.set_mode(request, inner_cx).await)
                         })?;
                         Ok(())
                     }
@@ -169,7 +170,9 @@ impl ZcodeAgent {
             .on_receive_request(
                 {
                     let agent = agent.clone();
-                    async move |request: CloseSessionRequest, responder, cx: ConnectionTo<Client>| {
+                    async move |request: CloseSessionRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
                         let agent = agent.clone();
                         cx.spawn(async move {
                             let _ = agent.close_session(request).await;
@@ -252,9 +255,7 @@ impl ZcodeAgent {
 
         Ok(InitializeResponse::new(ProtocolVersion::V1)
             .agent_capabilities(caps)
-            .agent_info(
-                Implementation::new("zcode-acp", env!("CARGO_PKG_VERSION")).title("ZCode"),
-            )
+            .agent_info(Implementation::new("zcode-acp", env!("CARGO_PKG_VERSION")).title("ZCode"))
             .auth_methods(auth_methods))
     }
 
@@ -357,8 +358,7 @@ impl ZcodeAgent {
         match method.as_str() {
             auth_method::ZAI_OAUTH => self.authenticate_oauth().await,
             auth_method::ZAI_API_KEY => self.authenticate_api_key().await,
-            other => Err(Error::invalid_params()
-                .data(format!("unknown auth method `{other}`"))),
+            other => Err(Error::invalid_params().data(format!("unknown auth method `{other}`"))),
         }
     }
 
@@ -372,16 +372,27 @@ impl ZcodeAgent {
             .build()
             .map_err(|e| Error::internal_error().data(format!("http client: {e}")))?;
 
+        // 1. Run the Z.AI OAuth init/poll flow.
         let store = auth::CredentialStore::open(self.cfg.options.data_base_dir.as_deref());
         let outcome = auth::login(&http, &origin, |url| {
             tracing::info!(%url, "OAuth: open this URL to authorize");
         })
         .await
         .map_err(map_auth_error)?;
-
         store
             .save_login(&outcome)
             .map_err(|e| Error::internal_error().data(format!("save credentials: {e}")))?;
+
+        // 2. Exchange the OAuth access token for a long-lived API key and
+        //    write ~/.zcode/cli/config.json so the spawned app-server can
+        //    self-bootstrap the provider. The app-server authenticates via
+        //    API key only (no Bearer path), so this exchange is mandatory
+        //    for OAuth users — it mirrors what `zcode login` does internally.
+        let api_key = auth::exchange_token_for_api_key(&http, &outcome.zai_access_token)
+            .await
+            .map_err(map_auth_error)?;
+        auth::write_cli_config(self.cfg.options.data_base_dir.as_deref(), &api_key, None)
+            .map_err(|e| Error::internal_error().data(format!("write cli config: {e}")))?;
 
         Ok(acp::schema::AuthenticateResponse::new())
     }
@@ -438,12 +449,17 @@ impl ZcodeAgent {
             return Ok(PromptResponse::new(StopReason::EndTurn));
         }
 
-        tracing::info!(?session_id, prompt_len = prompt_text.len(), "session/prompt");
+        tracing::info!(
+            ?session_id,
+            prompt_len = prompt_text.len(),
+            "session/prompt"
+        );
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = entry
-            .cmd
-            .send(SessionCommand::Send { text: prompt_text, reply: tx });
+        let _ = entry.cmd.send(SessionCommand::Send {
+            text: prompt_text,
+            reply: tx,
+        });
 
         let timeout = std::time::Duration::from_secs(self.cfg.options.prompt_timeout_secs);
         match tokio::time::timeout(timeout, rx).await {
@@ -456,9 +472,7 @@ impl ZcodeAgent {
                 };
                 let _ = cx.send_notification(acp::schema::SessionNotification::new(
                     session_id.clone(),
-                    SessionUpdate::AgentMessageChunk(ContentChunk::new(
-                        format!("⚠️ {e}\n").into(),
-                    )),
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new(format!("⚠️ {e}\n").into())),
                 ));
                 Ok(PromptResponse::new(stop))
             }
@@ -492,7 +506,10 @@ impl ZcodeAgent {
                     SessionMessage::Event(ev) => {
                         forward_event(&sid, &cx, &ev, &mut announced_tools);
                     }
-                    SessionMessage::TurnEnded { outcome, completion } => {
+                    SessionMessage::TurnEnded {
+                        outcome,
+                        completion,
+                    } => {
                         // All preceding events have already been forwarded
                         // (the channel is FIFO), so it is now safe to resolve
                         // the prompt's completion.
@@ -545,44 +562,47 @@ fn forward_event(
         "part.delta" => {
             if let Some(p) = &ev.payload
                 && let Ok(d) = serde_json::from_value::<zp::PartDeltaPayload>(p.clone())
-                    && let Some(update) = acp_translator::part_delta_to_update(&d) {
-                        let _ = cx.send_notification(acp::schema::SessionNotification::new(
-                            session_id.clone(),
-                            update,
-                        ));
-                    }
+                && let Some(update) = acp_translator::part_delta_to_update(&d)
+            {
+                let _ = cx.send_notification(acp::schema::SessionNotification::new(
+                    session_id.clone(),
+                    update,
+                ));
+            }
         }
         // Primary streaming path of the real `app-server`: token deltas as
         // `model.streaming` events (kind = text_delta | reasoning_delta | ...).
         "model.streaming" => {
             if let Some(p) = &ev.payload
                 && let Ok(d) = serde_json::from_value::<zp::ModelStreamingPayload>(p.clone())
-                    && let Some(update) = acp_translator::model_streaming_to_update(&d) {
-                        let _ = cx.send_notification(acp::schema::SessionNotification::new(
-                            session_id.clone(),
-                            update,
-                        ));
-                    }
+                && let Some(update) = acp_translator::model_streaming_to_update(&d)
+            {
+                let _ = cx.send_notification(acp::schema::SessionNotification::new(
+                    session_id.clone(),
+                    update,
+                ));
+            }
         }
         "tool.updated" => {
             if let Some(p) = &ev.payload
-                && let Ok(t) = serde_json::from_value::<zp::ToolUpdatedPayload>(p.clone()) {
-                    match acp_translator::tool_updated_to_calls(&t, announced_tools) {
-                        acp_translator::ToolEventTranslation::New(call) => {
-                            let _ = cx.send_notification(acp::schema::SessionNotification::new(
-                                session_id.clone(),
-                                SessionUpdate::ToolCall(call),
-                            ));
-                        }
-                        acp_translator::ToolEventTranslation::Update(upd) => {
-                            let _ = cx.send_notification(acp::schema::SessionNotification::new(
-                                session_id.clone(),
-                                SessionUpdate::ToolCallUpdate(upd),
-                            ));
-                        }
-                        acp_translator::ToolEventTranslation::None => {}
+                && let Ok(t) = serde_json::from_value::<zp::ToolUpdatedPayload>(p.clone())
+            {
+                match acp_translator::tool_updated_to_calls(&t, announced_tools) {
+                    acp_translator::ToolEventTranslation::New(call) => {
+                        let _ = cx.send_notification(acp::schema::SessionNotification::new(
+                            session_id.clone(),
+                            SessionUpdate::ToolCall(call),
+                        ));
                     }
+                    acp_translator::ToolEventTranslation::Update(upd) => {
+                        let _ = cx.send_notification(acp::schema::SessionNotification::new(
+                            session_id.clone(),
+                            SessionUpdate::ToolCallUpdate(upd),
+                        ));
+                    }
+                    acp_translator::ToolEventTranslation::None => {}
                 }
+            }
         }
         "turn.completed" => {
             // ZCode's usage payload uses inputTokens/outputTokens/totalTokens
@@ -592,25 +612,26 @@ fn forward_event(
             // so we fall back to a generous default when it isn't reported.
             if let Some(p) = &ev.payload
                 && let Ok(c) = serde_json::from_value::<zp::TurnCompletedPayload>(p.clone())
-                    && let Some(u) = c.usage.as_ref() {
-                        let used = u
-                            .get("totalTokens")
-                            .or_else(|| u.get("total"))
-                            .and_then(|v| v.as_u64());
-                        let window = u
-                            .get("contextWindow")
-                            .or_else(|| u.get("context_window"))
-                            .and_then(|v| v.as_u64());
-                        if let Some(used) = used {
-                            let _ = cx.send_notification(acp::schema::SessionNotification::new(
-                                session_id.clone(),
-                                SessionUpdate::UsageUpdate(UsageUpdate::new(
-                                    used,
-                                    window.unwrap_or(1_000_000),
-                                )),
-                            ));
-                        }
-                    }
+                && let Some(u) = c.usage.as_ref()
+            {
+                let used = u
+                    .get("totalTokens")
+                    .or_else(|| u.get("total"))
+                    .and_then(|v| v.as_u64());
+                let window = u
+                    .get("contextWindow")
+                    .or_else(|| u.get("context_window"))
+                    .and_then(|v| v.as_u64());
+                if let Some(used) = used {
+                    let _ = cx.send_notification(acp::schema::SessionNotification::new(
+                        session_id.clone(),
+                        SessionUpdate::UsageUpdate(UsageUpdate::new(
+                            used,
+                            window.unwrap_or(1_000_000),
+                        )),
+                    ));
+                }
+            }
         }
         _ => {}
     }
@@ -637,7 +658,8 @@ fn handle_server_request(
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("bad permission params: {e}");
-                    let _ = reply_tx.send(serde_json::json!({"decision":"deny","reason":"bad params"}));
+                    let _ =
+                        reply_tx.send(serde_json::json!({"decision":"deny","reason":"bad params"}));
                     return;
                 }
             };
@@ -715,8 +737,12 @@ fn handle_server_request(
             let _ = id;
         }
         other => {
-            tracing::debug!(method = other, "unsupported server→client interaction; denying");
-            let _ = reply_tx.send(serde_json::json!({"decision":"deny","reason":"unsupported interaction"}));
+            tracing::debug!(
+                method = other,
+                "unsupported server→client interaction; denying"
+            );
+            let _ = reply_tx
+                .send(serde_json::json!({"decision":"deny","reason":"unsupported interaction"}));
         }
     }
 }
@@ -744,8 +770,7 @@ fn map_session_error(e: crate::zcode::SessionError) -> Error {
     match e {
         E::CreateFailed(rpc) => {
             if rpc.code == zp::codes::MODEL_UNAVAILABLE {
-                Error::internal_error()
-                    .data(format!("ZCode model unavailable: {}", rpc.message))
+                Error::internal_error().data(format!("ZCode model unavailable: {}", rpc.message))
             } else {
                 Error::internal_error().data(rpc.to_string())
             }
@@ -755,8 +780,7 @@ fn map_session_error(e: crate::zcode::SessionError) -> Error {
 }
 
 fn map_auth_error(e: auth::AuthError) -> Error {
-    Error::internal_error()
-        .data(format!("{}: {e}", e.reason_code()))
+    Error::internal_error().data(format!("{}: {e}", e.reason_code()))
 }
 
 fn map_stop_reason(r: zp::StopReason) -> StopReason {

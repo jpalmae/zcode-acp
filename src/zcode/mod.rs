@@ -28,13 +28,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use protocol::{
-    methods, CreateSessionParams, Incoming, IncomingMessage, PermissionResponse, RequestId,
-    RpcError, SendParams, SubscribeParams,
+    CreateSessionParams, Incoming, IncomingMessage, PermissionResponse, RequestId, RpcError,
+    SendParams, SubscribeParams, methods,
 };
 use transport::{AppServerTransport, IdSource};
 
@@ -160,7 +160,8 @@ impl ZcodeSession {
                 )
             },
         };
-        let params = serde_json::to_value(&create).map_err(|e| SessionError::Encode(e.to_string()))?;
+        let params =
+            serde_json::to_value(&create).map_err(|e| SessionError::Encode(e.to_string()))?;
         build_session(cfg, cwd, methods::SESSION_CREATE, params).await
     }
 
@@ -295,8 +296,8 @@ impl DriverState {
             "part.delta" => {
                 if let Some(p) = &ev.payload
                     && let Ok(d) = serde_json::from_value::<protocol::PartDeltaPayload>(p.clone())
-                        && d.field.as_deref().unwrap_or("text") == "text"
-                            && let Some(t) = self.active_turn.as_mut()
+                    && d.field.as_deref().unwrap_or("text") == "text"
+                    && let Some(t) = self.active_turn.as_mut()
                 {
                     t.accumulated_text.push_str(&d.delta);
                 }
@@ -307,12 +308,11 @@ impl DriverState {
             // available as `final_text` on turn completion.
             "model.streaming" => {
                 if let Some(p) = &ev.payload
-                    && let Ok(d) = serde_json::from_value::<protocol::ModelStreamingPayload>(
-                        p.clone(),
-                    )
-                        && d.is_text()
-                            && let Some(text) = d.delta.as_deref()
-                            && let Some(t) = self.active_turn.as_mut()
+                    && let Ok(d) =
+                        serde_json::from_value::<protocol::ModelStreamingPayload>(p.clone())
+                    && d.is_text()
+                    && let Some(text) = d.delta.as_deref()
+                    && let Some(t) = self.active_turn.as_mut()
                 {
                     t.accumulated_text.push_str(text);
                 }
@@ -332,11 +332,15 @@ impl DriverState {
                 let msg = ev
                     .payload
                     .as_ref()
-                    .and_then(|p| serde_json::from_value::<protocol::TurnFailedPayload>(p.clone()).ok())
+                    .and_then(|p| {
+                        serde_json::from_value::<protocol::TurnFailedPayload>(p.clone()).ok()
+                    })
                     .and_then(|f| {
-                        f.error
-                            .as_ref()
-                            .and_then(|e| e.get("message").and_then(|m| m.as_str()).map(str::to_string))
+                        f.error.as_ref().and_then(|e| {
+                            e.get("message")
+                                .and_then(|m| m.as_str())
+                                .map(str::to_string)
+                        })
                     })
                     .unwrap_or_else(|| "turn failed".into());
                 self.end_turn(Err(TurnError::Failed(msg)));
@@ -477,7 +481,9 @@ async fn handle_send(
                 }));
             }
             Err(_) => {
-                let _ = reply.send(Err(TurnError::Transport("session/send channel closed".into())));
+                let _ = reply.send(Err(TurnError::Transport(
+                    "session/send channel closed".into(),
+                )));
             }
         },
         Err(e) => {
@@ -508,7 +514,11 @@ fn spawn_io(
     mpsc::UnboundedSender<Value>,
 ) {
     // Split the transport so each task owns its half without sharing.
-    let AppServerTransport { child, stdin, stdout } = transport;
+    let AppServerTransport {
+        child,
+        stdin,
+        stdout,
+    } = transport;
 
     let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Value>();
@@ -541,8 +551,7 @@ fn spawn_io(
             if v.is_null() {
                 let _ = writer.shutdown().await;
                 let _ = child.start_kill();
-                let _ =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
                 break;
             }
             let line = match serde_json::to_string(&v) {
@@ -588,10 +597,7 @@ async fn read_line_incoming(
     }
 }
 
-async fn write_line(
-    writer: &mut transport::ChildStdin,
-    line: &str,
-) -> std::io::Result<()> {
+async fn write_line(writer: &mut transport::ChildStdin, line: &str) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt;
     writer.write_all(line.as_bytes()).await?;
     writer.write_all(b"\n").await?;

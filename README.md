@@ -29,8 +29,9 @@ The adapter spawns one `app-server` per ACP session and drives it:
   `turn.completed` / `turn.failed` to end the turn).
 - `session/stop` / `session/close` for cancel and teardown.
 
-This was reverse-engineered from the running binary (see the in-repo research notes);
-the event schemas are typed in [`src/zcode/protocol.rs`](src/zcode/protocol.rs).
+This was reverse-engineered from the running binary and validated empirically
+against ZCode 3.5.3 (see [Compatibility](#compatibility)); the event schemas
+are typed in [`src/zcode/protocol.rs`](src/zcode/protocol.rs).
 
 ## Feature parity with codex-acp
 
@@ -217,6 +218,49 @@ pack/                   # Buzz persona pack
 - **Other server→client interactions** (`interaction/requestUserInput`,
   `interaction/browserList`, `interaction/requestProviderRuntimeHeaders`) are
   answered with a safe default rather than bridged to the host.
+
+## Compatibility
+
+The adapter drives ZCode's stdio `app-server`, which is an undocumented,
+vendor-private protocol. Compatibility is therefore coupled to a specific
+ZCode release; breaking changes in the bundle will require updates here.
+
+| ZCode (desktop) | CLI | Platform | Status |
+| --- | --- | --- | --- |
+| 3.5.3 (build 3911) | 0.15.2 | macOS arm64 | ✅ Verified — real-ZCode E2E (provider/auth, prompt, tool calls, tool permission bridging, completion) |
+| 3.5.x | 0.15.x | Linux x64 | 🔶 Likely works (same protocol surface); not yet tested |
+| 3.5.x | 0.15.x | Windows | 🔶 Likely works; not yet tested |
+| ≤ 3.3.6 | ≤ 0.15.x | any | ⚠️ Unverified — the `app-server` event shapes differ (`part.delta` vs `model.streaming`); older releases are not targeted |
+
+**What "verified" means for 3.5.3 / macOS arm64:** a prompt completes a full
+turn against the real `GLM-5.2` model — streaming text (`model.streaming` →
+`AgentMessageChunk`), tool calls (`tool.updated` → `ToolCall`/`ToolCallUpdate`),
+bidirectional permission bridging (`interaction/requestPermission` ←→ ACP
+`session/request_permission`), usage reporting, and `turn.completed` with
+`stopReason = end_turn`. Tool *execution* (e.g. a file actually being written
+after approval) was observed but not asserted in the automated test suite.
+
+### Why not the host-service spawn path
+
+An earlier alternative (used by `supermomonga/zcode-acp` for ZCode 3.3.6)
+spawns the desktop Electron host service headlessly to inherit its provider
+registry. That technique relies on paths inside `app.asar`
+(`out/host/index.js`, `chunk-HAEWO5CB.js`) that **were removed in ZCode 3.5.x**
+— the bundle was repacked and those entrypoints no longer exist. This adapter
+instead uses the supported `app-server` path, which self-bootstraps providers
+from `~/.zcode/cli/config.json` (populated by `zcode login` or by this
+adapter's `authenticate` method via the OAuth → API-key exchange).
+
+### Maintenance policy
+
+- **Semver:** breaking changes to the ZCode protocol that require adapter
+  updates will bump the minor version and be noted in the changelog.
+- **Support window:** the latest ZCode release is the primary target. The
+  adapter is best-effort for the immediately prior minor; older releases are
+  not supported.
+- **Reporting breakage:** if a ZCode upgrade breaks the adapter, please open
+  an issue with the ZCode build number, CLI version, and the event/error
+  output.
 
 ## License
 

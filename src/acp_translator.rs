@@ -4,11 +4,11 @@
 //! and emits ACP updates through the agent. This module owns the per-event
 //! mapping so the agent code stays readable.
 
-use agent_client_protocol as acp;
 use acp::schema::{
     Content, ContentBlock, ContentChunk, SessionUpdate, ToolCall, ToolCallContent,
     ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
+use agent_client_protocol as acp;
 use serde_json::Value;
 
 use crate::zcode::protocol::{
@@ -36,9 +36,13 @@ pub fn part_delta_to_update(delta: &PartDeltaPayload) -> Option<SessionUpdate> {
 pub fn model_streaming_to_update(delta: &ModelStreamingPayload) -> Option<SessionUpdate> {
     let text = delta.delta.clone()?;
     if delta.is_reasoning() {
-        Some(SessionUpdate::AgentThoughtChunk(ContentChunk::new(text.into())))
+        Some(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+            text.into(),
+        )))
     } else if delta.is_text() {
-        Some(SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into())))
+        Some(SessionUpdate::AgentMessageChunk(ContentChunk::new(
+            text.into(),
+        )))
     } else {
         None
     }
@@ -68,10 +72,12 @@ pub fn tool_updated_to_calls(
                 .map(|v| v.to_string())
                 .unwrap_or_default();
             let locations = extract_locations(&payload.input);
-            ToolEventTranslation::New(ToolCall::new(id.clone(), title.clone())
-                .raw_input(input)
-                .kind(kind)
-                .locations(locations))
+            ToolEventTranslation::New(
+                ToolCall::new(id.clone(), title.clone())
+                    .raw_input(input)
+                    .kind(kind)
+                    .locations(locations),
+            )
         }
         ZToolKind::Started => {
             // First-seen fallback if we missed `scheduled`.
@@ -81,9 +87,11 @@ pub fn tool_updated_to_calls(
                     .as_ref()
                     .map(|v| v.to_string())
                     .unwrap_or_default();
-                ToolEventTranslation::New(ToolCall::new(id.clone(), title)
-                    .raw_input(input)
-                    .kind(tool_kind_for(payload.tool_name.as_deref().unwrap_or(""))))
+                ToolEventTranslation::New(
+                    ToolCall::new(id.clone(), title)
+                        .raw_input(input)
+                        .kind(tool_kind_for(payload.tool_name.as_deref().unwrap_or(""))),
+                )
             } else {
                 ToolEventTranslation::None
             }
@@ -98,8 +106,7 @@ pub fn tool_updated_to_calls(
             ))
         }
         ZToolKind::Error => {
-            let content =
-                tool_text_content(payload.error.as_ref().and_then(|e| e.get("message")));
+            let content = tool_text_content(payload.error.as_ref().and_then(|e| e.get("message")));
             ToolEventTranslation::Update(ToolCallUpdate::new(
                 id.clone(),
                 ToolCallUpdateFields::new()
@@ -278,16 +285,16 @@ mod tests {
         };
         match tool_updated_to_calls(&result, &mut seen) {
             ToolEventTranslation::Update(u) => {
-                assert!(matches!(
-                    u.fields.status,
-                    Some(ToolCallStatus::Completed)
-                ));
+                assert!(matches!(u.fields.status, Some(ToolCallStatus::Completed)));
             }
-            other => panic!("expected update, got {other:?}", other = match other {
-                ToolEventTranslation::New(_) => "New",
-                ToolEventTranslation::Update(_) => "Update",
-                ToolEventTranslation::None => "None",
-            }),
+            other => panic!(
+                "expected update, got {other:?}",
+                other = match other {
+                    ToolEventTranslation::New(_) => "New",
+                    ToolEventTranslation::Update(_) => "Update",
+                    ToolEventTranslation::None => "None",
+                }
+            ),
         }
     }
 }

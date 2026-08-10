@@ -151,8 +151,8 @@ where
     on_authorize_url(&init.authorize_url);
 
     // Poll loop.
-    let deadline =
-        std::time::Instant::now() + POLL_OVERALL_TIMEOUT.min(std::time::Duration::from_millis(
+    let deadline = std::time::Instant::now()
+        + POLL_OVERALL_TIMEOUT.min(std::time::Duration::from_millis(
             init.expires_at.saturating_mul(1000),
         ));
     let interval = POLL_MIN_INTERVAL.max(std::time::Duration::from_secs(init.poll_interval_sec));
@@ -189,7 +189,9 @@ where
             "pending" => continue,
             "failed" => return Err(AuthError::Denied),
             "ready" => {
-                let zai = data.zai.ok_or(AuthError::Incomplete("missing zai tokens"))?;
+                let zai = data
+                    .zai
+                    .ok_or(AuthError::Incomplete("missing zai tokens"))?;
                 let token = data
                     .token
                     .ok_or(AuthError::Incomplete("missing zcode jwt"))?;
@@ -292,28 +294,25 @@ impl CredentialStore {
             Ok(bytes) => {
                 let v: serde_json::Value =
                     serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-                Ok(v.as_object()
-                    .cloned()
-                    .unwrap_or_else(serde_json::Map::new))
+                Ok(v.as_object().cloned().unwrap_or_else(serde_json::Map::new))
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(serde_json::Map::new())
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::Map::new()),
             Err(e) => Err(e),
         }
     }
 
     /// Atomically write the map back.
-    fn write_atomic(&self, map: &serde_json::Map<String, serde_json::Value>) -> std::io::Result<()> {
+    fn write_atomic(
+        &self,
+        map: &serde_json::Map<String, serde_json::Value>,
+    ) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(map.clone()))?;
-        let tmp = self.path.with_extension(format!(
-            "tmp.{}.{}",
-            std::process::id(),
-            random_hex(4)
-        ));
+        let tmp = self
+            .path
+            .with_extension(format!("tmp.{}.{}", std::process::id(), random_hex(4)));
         // Write with 0o600 then rename.
         {
             use std::io::Write;
@@ -445,12 +444,24 @@ fn decrypt(secret: &[u8], literal: &str) -> Result<Vec<u8>, AuthError> {
         .ok_or_else(|| AuthError::Store("missing enc:v1: prefix".into()))?;
     let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let mut parts = rest.splitn(3, '.');
-    let iv_b64 = parts.next().ok_or_else(|| AuthError::Store("bad literal".into()))?;
-    let tag_b64 = parts.next().ok_or_else(|| AuthError::Store("bad literal".into()))?;
-    let ct_b64 = parts.next().ok_or_else(|| AuthError::Store("bad literal".into()))?;
-    let iv = b64.decode(iv_b64).map_err(|e| AuthError::Store(format!("b64 iv: {e}")))?;
-    let tag = b64.decode(tag_b64).map_err(|e| AuthError::Store(format!("b64 tag: {e}")))?;
-    let ct = b64.decode(ct_b64).map_err(|e| AuthError::Store(format!("b64 ct: {e}")))?;
+    let iv_b64 = parts
+        .next()
+        .ok_or_else(|| AuthError::Store("bad literal".into()))?;
+    let tag_b64 = parts
+        .next()
+        .ok_or_else(|| AuthError::Store("bad literal".into()))?;
+    let ct_b64 = parts
+        .next()
+        .ok_or_else(|| AuthError::Store("bad literal".into()))?;
+    let iv = b64
+        .decode(iv_b64)
+        .map_err(|e| AuthError::Store(format!("b64 iv: {e}")))?;
+    let tag = b64
+        .decode(tag_b64)
+        .map_err(|e| AuthError::Store(format!("b64 tag: {e}")))?;
+    let ct = b64
+        .decode(ct_b64)
+        .map_err(|e| AuthError::Store(format!("b64 ct: {e}")))?;
     if iv.len() != IV_LEN || tag.len() != TAG_LEN {
         return Err(AuthError::Store("iv/tag length mismatch".into()));
     }
@@ -484,9 +495,10 @@ fn fill_random(out: &mut [u8]) {
     {
         use std::io::Read;
         if let Ok(mut f) = std::fs::File::open("/dev/urandom")
-            && f.read_exact(out).is_ok() {
-                return;
-            }
+            && f.read_exact(out).is_ok()
+        {
+            return;
+        }
     }
     // Fallback: time-seeded xorshift.
     let mut seed = std::time::SystemTime::now()
@@ -516,6 +528,110 @@ pub fn from_rpc(err: &RpcError) -> AuthError {
     AuthError::Store(format!("rpc error {}: {}", err.code, err.message))
 }
 
+// ---------------------------------------------------------------------------
+// OAuth → API-key exchange + cli/config.json write
+// ---------------------------------------------------------------------------
+//
+// The app-server (unlike the desktop host) authenticates exclusively via an
+// API key read from `~/.zcode/cli/config.json`. For OAuth users we must
+// exchange the OAuth access token for a long-lived Z.AI API key — exactly
+// what `zcode login` does internally — and write it into that file. This is
+// the supported, forward-compatible path (the desktop host's internal
+// `app.asar/out/host/index.js` entrypoint was removed in 3.5.x, so the
+// host-service spawn technique used by older adapters no longer applies).
+
+/// Z.AI "biz" API origin (hardcoded in the bundle, not overridable by env).
+const ZAI_API_ORIGIN: &str = "https://api.z.ai";
+
+/// Default model the exchanged provider points at.
+const DEFAULT_MODEL_MAIN: &str = "builtin:zai/GLM-5.2";
+const DEFAULT_BASE_URL: &str = "https://api.z.ai/api/anthropic";
+
+/// Response of `POST {ZAI_API_ORIGIN}/api/auth/z/login`.
+#[derive(Debug, Clone, Deserialize)]
+struct BizTokenResponse {
+    access_token: String,
+}
+
+/// Exchange the Z.AI OAuth access token for a long-lived API key, mirroring
+/// the bundle's `nmn`→`Nln` flow. Returns the API key (the "biz token").
+pub async fn exchange_token_for_api_key(
+    http: &reqwest::Client,
+    zai_access_token: &str,
+) -> Result<String, AuthError> {
+    let url = format!("{ZAI_API_ORIGIN}/api/auth/z/login");
+    tracing::info!(%url, "oauth: exchanging access token for API key");
+    let resp = http
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(json!({ "token": zai_access_token }).to_string())
+        .send()
+        .await
+        .map_err(|e| AuthError::Http(url.clone(), e.to_string()))?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(AuthError::InitFailed(
+            status.as_u16(),
+            format!("token exchange failed: {body}"),
+        ));
+    }
+    let parsed: BizTokenResponse = serde_json::from_str(&body)
+        .map_err(|e| AuthError::Store(format!("bad biz token response: {e}; body={body}")))?;
+    Ok(parsed.access_token)
+}
+
+/// Write a minimal `~/.zcode/cli/config.json` with the given API key, so the
+/// spawned app-server can self-bootstrap the provider. Mirrors the shape
+/// `zcode login` writes. Atomic + chmod 600.
+pub fn write_cli_config(
+    data_base_dir: Option<&Path>,
+    api_key: &str,
+    model_main: Option<&str>,
+) -> Result<PathBuf, AuthError> {
+    let home = data_base_dir
+        .map(|p| p.to_path_buf())
+        .or_else(home_dir)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let path = home.join(".zcode/cli/config.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let config = json!({
+        "provider": {
+            "builtin:zai": {
+                "kind": "anthropic",
+                "options": {
+                    "apiKey": api_key,
+                    "baseURL": DEFAULT_BASE_URL,
+                }
+            }
+        },
+        "model": {
+            "main": model_main.unwrap_or(DEFAULT_MODEL_MAIN),
+        }
+    });
+    let bytes = serde_json::to_vec_pretty(&config)
+        .map_err(|e| AuthError::Store(format!("encode cli config: {e}")))?;
+    let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), random_hex(4)));
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(&bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+    std::fs::rename(&tmp, &path)?;
+    tracing::info!(path = ?path, "wrote cli config with exchanged API key");
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,10 +657,13 @@ mod tests {
         // Flip a char in the ciphertext portion (last segment).
         let last_byte = tampered.len().checked_sub(1).unwrap();
         let b = tampered.remove(last_byte);
-        tampered.insert(last_byte, match b {
-            'A' => 'B',
-            c => char::from((c as u8) ^ 1),
-        });
+        tampered.insert(
+            last_byte,
+            match b {
+                'A' => 'B',
+                c => char::from((c as u8) ^ 1),
+            },
+        );
         assert!(decrypt(secret, &tampered).is_err());
     }
 }

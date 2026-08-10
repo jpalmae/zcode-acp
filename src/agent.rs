@@ -541,10 +541,23 @@ fn forward_event(
     announced_tools: &mut HashMap<String, ()>,
 ) {
     match ev.type_.as_str() {
+        // Legacy/alternate path: some surfaces emit `part.delta`.
         "part.delta" => {
             if let Some(p) = &ev.payload
                 && let Ok(d) = serde_json::from_value::<zp::PartDeltaPayload>(p.clone())
                     && let Some(update) = acp_translator::part_delta_to_update(&d) {
+                        let _ = cx.send_notification(acp::schema::SessionNotification::new(
+                            session_id.clone(),
+                            update,
+                        ));
+                    }
+        }
+        // Primary streaming path of the real `app-server`: token deltas as
+        // `model.streaming` events (kind = text_delta | reasoning_delta | ...).
+        "model.streaming" => {
+            if let Some(p) = &ev.payload
+                && let Ok(d) = serde_json::from_value::<zp::ModelStreamingPayload>(p.clone())
+                    && let Some(update) = acp_translator::model_streaming_to_update(&d) {
                         let _ = cx.send_notification(acp::schema::SessionNotification::new(
                             session_id.clone(),
                             update,
@@ -572,18 +585,32 @@ fn forward_event(
                 }
         }
         "turn.completed" => {
+            // ZCode's usage payload uses inputTokens/outputTokens/totalTokens
+            // (and cacheReadTokens), not the `total`/`context_window` keys we
+            // used to look for. We forward totalTokens as `used`; the context
+            // window comes from the model catalog rather than the usage event,
+            // so we fall back to a generous default when it isn't reported.
             if let Some(p) = &ev.payload
                 && let Ok(c) = serde_json::from_value::<zp::TurnCompletedPayload>(p.clone())
-                    && let Some(u) = c.usage.as_ref()
-                        && let (Some(used), Some(window)) = (
-                            u.get("total").and_then(|v| v.as_u64()),
-                            u.get("context_window").and_then(|v| v.as_u64()),
-                        ) {
+                    && let Some(u) = c.usage.as_ref() {
+                        let used = u
+                            .get("totalTokens")
+                            .or_else(|| u.get("total"))
+                            .and_then(|v| v.as_u64());
+                        let window = u
+                            .get("contextWindow")
+                            .or_else(|| u.get("context_window"))
+                            .and_then(|v| v.as_u64());
+                        if let Some(used) = used {
                             let _ = cx.send_notification(acp::schema::SessionNotification::new(
                                 session_id.clone(),
-                                SessionUpdate::UsageUpdate(UsageUpdate::new(used, window)),
+                                SessionUpdate::UsageUpdate(UsageUpdate::new(
+                                    used,
+                                    window.unwrap_or(1_000_000),
+                                )),
                             ));
                         }
+                    }
         }
         _ => {}
     }

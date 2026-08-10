@@ -12,8 +12,8 @@ use acp::schema::{
 use serde_json::Value;
 
 use crate::zcode::protocol::{
-    EventEnvelope, PartDeltaPayload, PermissionPayload, ToolKind as ZToolKind,
-    ToolUpdatedPayload,
+    EventEnvelope, ModelStreamingPayload, PartDeltaPayload, PermissionPayload,
+    ToolKind as ZToolKind, ToolUpdatedPayload,
 };
 
 /// Build the [`SessionUpdate`] for a streamed text/reasoning delta.
@@ -26,6 +26,21 @@ pub fn part_delta_to_update(delta: &PartDeltaPayload) -> Option<SessionUpdate> {
             delta.delta.clone().into(),
         ))),
         _ => None,
+    }
+}
+
+/// Build the [`SessionUpdate`] for a `model.streaming` delta from ZCode's real
+/// app-server. `kind = text_delta` → agent message chunk, `reasoning_delta` →
+/// thought chunk, anything else (tool_call, tool_input_*) is dropped here
+/// because tool calls are surfaced separately via `tool.updated`.
+pub fn model_streaming_to_update(delta: &ModelStreamingPayload) -> Option<SessionUpdate> {
+    let text = delta.delta.clone()?;
+    if delta.is_reasoning() {
+        Some(SessionUpdate::AgentThoughtChunk(ContentChunk::new(text.into())))
+    } else if delta.is_text() {
+        Some(SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into())))
+    } else {
+        None
     }
 }
 

@@ -62,18 +62,46 @@ cargo build --release
 
 ## Configure ZCode
 
-The `app-server` requires a model provider configured at `~/.zcode/cli/config.json`
-before it will run a turn. Either:
+The `app-server` (which the adapter spawns) reads model-provider config from
+**`~/.zcode/cli/config.json`** — a *separate* file from the desktop app's
+`~/.zcode/v2/config.json`. The CLI's config resolver requires a `model.main`
+field pointing at a configured provider; the desktop config does not carry
+that field, so symlinking or `--settings` will **not** work. (Verified against
+ZCode 3.5.3.)
 
-- run `zcode login` once (the adapter's `authenticate` method with `zai-oauth` does
-  the same thing at runtime), or
-- create the config file by hand with an enabled provider + API key.
+A minimal working config for an Anthropic-compatible provider with an API key:
 
-Verify headless mode works on its own:
+```json
+{
+  "provider": {
+    "builtin:zai": {
+      "kind": "anthropic",
+      "options": {
+        "apiKey": "<YOUR_ZAI_API_KEY>",
+        "baseURL": "https://api.z.ai/api/anthropic"
+      }
+    }
+  },
+  "model": { "main": "builtin:zai/GLM-5.2" }
+}
+```
+
+Place it at `~/.zcode/cli/config.json` (chmod 600 — it contains a secret). The
+only hard requirements are `provider.<id>.kind` and `model.main = "<id>/<modelId>"`;
+`name`, `models`, `enabled`, `apiKeyRequired` are optional.
+
+Then verify the CLI can complete a turn on its own:
 
 ```bash
 node "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs" -p "say PONG"
 ```
+
+> **Note on auth methods.** The adapter also advertises an OAuth auth method
+> (`zai-oauth`) that runs the Z.AI init/poll flow. That path writes the
+> encrypted credential store the *desktop* app uses, not `cli/config.json`,
+> so for the app-server to see a provider you still need the `cli/config.json`
+> above (or run `zcode login`, which populates both). The API-key path is the
+> simpler one for headless use.
 
 ## Run
 

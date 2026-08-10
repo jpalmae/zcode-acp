@@ -66,15 +66,30 @@ function handle(line) {
     }
     case "session/send": {
       respond(id, { sessionId: activeSession, accepted: true, stateRevision: 1 });
-      // Stream a reply asynchronously.
+      // Stream a reply asynchronously, mirroring the real app-server's event
+      // sequence: model.streaming text deltas (kind = text_delta), then a
+      // tool.updated schedule/result pair, then turn.completed with the real
+      // usage payload shape (inputTokens/outputTokens/totalTokens).
       setTimeout(() => {
         const sid = activeSession;
-        // 1. text delta
-        event(sid, "part.delta", {
-          messageId: "msg_1",
-          partId: "part_1",
-          field: "text",
-          delta: "PONG",
+        // 1. model text delta (the real app-server streams token-by-token)
+        event(sid, "model.streaming", {
+          assistantMessageId: "msg_1",
+          delta: "P",
+          done: false,
+          kind: "text_delta",
+        });
+        event(sid, "model.streaming", {
+          assistantMessageId: "msg_1",
+          delta: "ONG",
+          done: false,
+          kind: "text_delta",
+        });
+        event(sid, "model.streaming", {
+          assistantMessageId: "msg_1",
+          delta: null,
+          done: true,
+          kind: "text_delta",
         });
         // 2. tool scheduled
         event(sid, "tool.updated", {
@@ -90,12 +105,23 @@ function handle(line) {
           kind: "result",
           result: { output: "hi\n" },
         });
-        // 4. turn completed
+        // 4. turn completed (real usage payload shape)
         event(sid, "turn.completed", {
           response: "PONG",
-          tokenCount: 1,
-          usage: { total: 100, context_window: 100000 },
+          tokenCount: 11813,
+          usage: {
+            source: "provider",
+            modelRequestCount: 1,
+            inputTokens: 11810,
+            outputTokens: 3,
+            totalTokens: 11813,
+            cacheReadTokens: 9088,
+            cacheWriteTokens: 0,
+            reasoningTokens: 0,
+          },
           toolCallCount: 1,
+          resultType: "success",
+          duration: 3437,
         });
       }, 50);
       break;

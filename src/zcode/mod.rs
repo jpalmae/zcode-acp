@@ -291,6 +291,7 @@ impl DriverState {
 
     fn handle_event(&mut self, ev: protocol::EventEnvelope) {
         match ev.type_.as_str() {
+            // Legacy/alternate path: some surfaces emit `part.delta`.
             "part.delta" => {
                 if let Some(p) = &ev.payload
                     && let Ok(d) = serde_json::from_value::<protocol::PartDeltaPayload>(p.clone())
@@ -298,6 +299,22 @@ impl DriverState {
                             && let Some(t) = self.active_turn.as_mut()
                 {
                     t.accumulated_text.push_str(&d.delta);
+                }
+            }
+            // Primary streaming path of the real `app-server`: token deltas
+            // arrive as `model.streaming` events with `kind = text_delta` or
+            // `reasoning_delta`. We accumulate the text deltas so they are
+            // available as `final_text` on turn completion.
+            "model.streaming" => {
+                if let Some(p) = &ev.payload
+                    && let Ok(d) = serde_json::from_value::<protocol::ModelStreamingPayload>(
+                        p.clone(),
+                    )
+                        && d.is_text()
+                            && let Some(text) = d.delta.as_deref()
+                            && let Some(t) = self.active_turn.as_mut()
+                {
+                    t.accumulated_text.push_str(text);
                 }
             }
             "turn.completed" => {
@@ -629,8 +646,11 @@ pub async fn build_session(
             None => return Err(SessionError::TransportClosed),
         }
     };
+    // ZCode's `session/create` response nests the id at `result.session.sessionId`
+    // (3.5.x); older surfaces put it at `result.sessionId`. Accept both.
     let zcode_session_id = result_value
         .get("sessionId")
+        .or_else(|| result_value.get("session").and_then(|s| s.get("sessionId")))
         .and_then(|x| x.as_str())
         .map(str::to_string)
         .ok_or_else(|| SessionError::Protocol("no sessionId in response".into()))?;

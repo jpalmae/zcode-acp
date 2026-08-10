@@ -156,6 +156,7 @@ pub mod methods {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSessionParams {
     pub workspace: WorkspaceRef,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,12 +168,14 @@ pub struct CreateSessionParams {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceRef {
     pub workspace_key: String,
     pub workspace_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelRef {
     pub provider_id: String,
     pub model_id: String,
@@ -347,6 +350,50 @@ pub struct PartDeltaPayload {
     pub delta: String,
 }
 
+// ----- model.streaming payload -----
+//
+// ZCode's real `app-server` streams token deltas as `model.streaming` events
+// (not `part.delta`). `kind` discriminates what the delta contains:
+//   - `text_delta`      -> assistant message text
+//   - `reasoning_delta` -> reasoning/thought text
+//   - `tool_call`       -> a (non-streamed) tool-call announcement
+//   - `tool_input_start` / `tool_input_delta` / `tool_input_end`
+//                        -> streamed JSON input for a tool call
+// We only forward text/reasoning deltas as ACP message chunks; tool calls
+// arrive separately via `tool.updated` events.
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelStreamingPayload {
+    #[serde(default)]
+    pub assistant_message_id: Option<String>,
+    #[serde(default)]
+    pub delta: Option<String>,
+    #[serde(default)]
+    pub done: Option<bool>,
+    /// `"text_delta"` | `"reasoning_delta"` | `"tool_call"` | `"tool_input_*"`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub part_id: Option<String>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+}
+
+impl ModelStreamingPayload {
+    /// `true` if this delta carries assistant message text we should forward.
+    pub fn is_text(&self) -> bool {
+        matches!(self.kind.as_deref(), Some("text_delta") | None)
+    }
+
+    /// `true` if this delta carries reasoning text we should forward.
+    pub fn is_reasoning(&self) -> bool {
+        matches!(self.kind.as_deref(), Some("reasoning_delta"))
+    }
+}
+
 // ----- permission.requested payload (event form; the request form omits
 //       suggestedPermissionUpdates but is otherwise the same shape) -----
 
@@ -418,6 +465,7 @@ pub struct TurnFailedPayload {
 
 /// What we send back to the server for `interaction/requestPermission`.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionResponse {
     pub decision: PermissionDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -438,6 +486,7 @@ pub enum PermissionDecision {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionRuleUpdate {
     #[serde(rename = "type")]
     pub type_: &'static str, // always "addRules"
@@ -454,6 +503,7 @@ pub enum PermissionRuleBehavior {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PermissionRule {
     pub tool_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

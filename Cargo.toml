@@ -27,7 +27,7 @@ uuid = { version = "1", features = ["v4"] }
 # HTTP client for the Z.AI OAuth init/poll flow + token exchange.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Crypto for ~/.zcode/v2/credentials.json (AES-256-GCM, SHA-256 key).
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 sha2 = "0.10"
 # Base64url encoding for the credentials ciphertext + OAuth tokens.
 base64 = "0.22"
